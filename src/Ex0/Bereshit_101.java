@@ -2,7 +2,7 @@ package Ex0;
 
 
 public class Bereshit_101 {
-    public static final double DT = 1; // seconds
+    public static final double DT = .5; // seconds, should probably not be greater than 1.5
 
     /* Spacecraft parameters */
     public static final double MASS_WHEN_EMPTY = 165; // kg
@@ -67,7 +67,17 @@ public class Bereshit_101 {
                     backPower / BALANCE_ENGINES_MAX_FORCE);
         }
 
-        public void applyEnginesNormalizedForces(double mainNormalizedPower, double frontNormalizedPower, double backNormalizedPower) {
+        /**
+         * Applies forces from the spacecraft's main and balance engines.
+         * The parameters are expected to be normalized in [0,1] such that 1 is the
+         * maximum force for an engine to use.
+         *
+         * @param mainNormalizedPower  Force from the main engine (normalized).
+         * @param frontNormalizedPower Force from the front balance engine (normalized).
+         * @param backNormalizedPower  Force from the back balance engine (normalized).
+         */
+        public void applyEnginesNormalizedForces
+        (double mainNormalizedPower, double frontNormalizedPower, double backNormalizedPower) {
             // Normalize input powers
             mainNormalizedPower = Math.clamp(mainNormalizedPower, 0, 1);
             frontNormalizedPower = Math.clamp(frontNormalizedPower, 0, 1);
@@ -145,7 +155,7 @@ public class Bereshit_101 {
         /**
          * @return The force (in Newtons) required for vertical-velocity to be 0 at altitude 0
          */
-        double getForceForLanding() {
+        public double getForceForLanding() {
             double ans = 0;
             double distance = altitude;
             double velocity = verticalVelocity;
@@ -164,9 +174,9 @@ public class Bereshit_101 {
             double nextVelocity = velocity + Moon.GRAVITY_CONST * DT;
             double nextDistance = Math.abs(distance - nextVelocity * DT);
             double nextStopDistance = 0.5 * (totalMass / maxPossibleForce) * nextVelocity * nextVelocity;
-            if (Math.abs(distance) < currStopDistance) {
-                System.out.println("GONNA CRASH!");
-            }
+//            if (Math.abs(distance) < currStopDistance) {
+//                System.out.println("GONNA CRASH!");
+//            }
 //            if ((nextDistance < nextStopDistance) ||
 //                    (nextDistance < currStopDistance)) { // then decelerate
             if (nextDistance < nextStopDistance) { // then decelerate
@@ -182,15 +192,23 @@ public class Bereshit_101 {
         double currentTargetAngle = Double.MAX_VALUE;
         public boolean finishedReachingAngle = false;
 
-        double[] balanceEnginesForcesForTarget(double target) {
-            if (Math.abs(currentTargetAngle - target) > EPSILON) {
-                currentTargetAngle = target;
+        /**
+         * Calculates the amount of forces (in Newtons) the balance-engines should use in order
+         * to turn the spacecraft to the desired angle such that when it reaches it the spin
+         * velocity will be 0.
+         *
+         * @param targetAngle Desired angle of the spacecraft.
+         * @return An array of length 2 containing the required [frontEngineForce, backEngineForce].
+         */
+        public double[] getBalanceEnginesForcesForAngle(double targetAngle) {
+            if (Math.abs(currentTargetAngle - targetAngle) > EPSILON) {
+                currentTargetAngle = targetAngle;
                 lastDtAccelerated = true;
             }
 
             double[] ans = new double[2]; // [frontEngineForce, backEngineForce]
             double velocity = spinVelocity;
-            double distance = (target - angle);
+            double distance = (targetAngle - angle);
             boolean movingAwayFromTarget = velocity != 0 && distance * velocity < 0;
             double maxForce = BALANCE_ENGINES_MAX_FORCE;
 
@@ -301,29 +319,32 @@ public class Bereshit_101 {
     /**
      * Runs the spacecraft landing simulation with the given parameters.
      *
-     * @param angle1       The target angle to reach before starting to adjust horizontal velocity.
-     * @param hVelocityReq The maximum horizontal velocity allowed at landing
-     *                     (sometimes better when greater than 0, depends on DT).
-     * @param angle2       The target angle to reach before starting to adjust vertical velocity for landing.
+     * @param angle1            The target angle to reach before starting to adjust horizontal velocity.
+     * @param hVelocityReq      The maximum horizontal velocity allowed at landing
+     *                          (sometimes better when greater than 0, depends on DT).
+     * @param angle2            The target angle to reach before starting to adjust vertical velocity for landing.
+     * @param timeStepsPerPrint Per how many time-steps (dependent on DT) to print the spacecraft's state.
+     *                          Entering a negative number will cause none except the first and last states to be printed.
      */
-    public static void runSimulation(double angle1, double hVelocityReq, double angle2) {
+    public static void runSimulation(double angle1, double hVelocityReq, double angle2, int timeStepsPerPrint) {
         Spacecraft spacecraft = new Spacecraft();
         double totalTime = 0;
         int timeJumps = 0;
         States state = States.SET_ANGLE_1;
+        if (timeStepsPerPrint < 0) {
+            timeStepsPerPrint = Integer.MAX_VALUE;
+        }
 
         System.out.println("Simulating Bereshit's Landing:");
-        System.out.printf("time: %.2f, %s%n", totalTime, spacecraft);
-
         while (spacecraft.altitude > 0) {
-            if (timeJumps % 10 == 0 || spacecraft.altitude < 100) {
+            if (timeJumps % timeStepsPerPrint == 0) {
                 System.out.printf("time: %.2f, %s%n", totalTime, spacecraft);
             }
 
             double[] balanceEnginesReqForces = new double[2];
             double mainEngineReqForce = 0;
             if (state == States.SET_ANGLE_1) {
-                balanceEnginesReqForces = spacecraft.balanceEnginesForcesForTarget(angle1);
+                balanceEnginesReqForces = spacecraft.getBalanceEnginesForcesForAngle(angle1);
             }
             else if (state == States.SET_H_VELOCITY) {
                 if (spacecraft.horizontalVelocity > hVelocityReq) {
@@ -332,7 +353,7 @@ public class Bereshit_101 {
                 }
             }
             else if (state == States.SET_ANGLE_2) {
-                balanceEnginesReqForces = spacecraft.balanceEnginesForcesForTarget(angle2);
+                balanceEnginesReqForces = spacecraft.getBalanceEnginesForcesForAngle(angle2);
             }
             else if (state == States.SET_V_VELOCITY) {
                 mainEngineReqForce = spacecraft.getForceForLanding();
@@ -361,21 +382,33 @@ public class Bereshit_101 {
             totalTime += DT;
         }
         System.out.printf("time: %.2f, %s%n", totalTime, spacecraft);
+        if (Math.abs(spacecraft.verticalVelocity) < 2.5 && Math.abs(spacecraft.horizontalVelocity) < 2.5) {
+            System.out.println("Landing Successful");
+        }
+        else {
+            System.out.println("Landing Failed");
+        }
     }
 
     public static void main(String[] args) {
-        /* alternative case - 26:52 in the video (uncomment to use) */
-
+        /* alternative starting point 1 - 26:52 in the video (uncomment to use) */
 //        INITIAL_ALTITUDE = 22629;
 //        INITIAL_FUEL_MASS = 197.06;
-////        INITIAL_ANGLE = ?;
+//        INITIAL_ANGLE = 48; // real one is not displayed in the video
 //        INITIAL_HORIZONTAL_VELOCITY = 1564.9;
 //        INITIAL_VERTICAL_VELOCITY = 22.2;
 
-        AltitudeToAngleInterpolator interpolator = new AltitudeToAngleInterpolator();
-        double angle1 = interpolator.interpolate(INITIAL_ALTITUDE);
+        /* alternative starting point 2 - 21:58 in the video (uncomment to use) */
+        INITIAL_ALTITUDE = 33522;
+        INITIAL_FUEL_MASS = 216.06;
+        INITIAL_ANGLE = 40.5; // real one is not displayed in the video
+        INITIAL_HORIZONTAL_VELOCITY = 1698.3;
+        INITIAL_VERTICAL_VELOCITY = 47.9;
 
-        runSimulation(angle1, 3, 0);
+        AltitudeToAngleInterpolator interpolator = new AltitudeToAngleInterpolator();
+        double angle1 = interpolator.f(INITIAL_ALTITUDE);
+
+        runSimulation(angle1, 3, 0, -1);
     }
 }
 
@@ -384,10 +417,13 @@ public class Bereshit_101 {
  * and returns a good angle1 for it to use in runSimulation().
  */
 class AltitudeToAngleInterpolator {
-    private final double[] xValues = {0, 13748, 22629};  // Add more as needed
-    private final double[] yValues = {0, -63, -70};      // Corresponding values
+    private final double[] xValues = {0, 13748, 22629, 33522};
+    private final double[] yValues = {0, -64, -73, -74};
 
-    public double interpolate(double x) {
+    /**
+     * @return The interpolator's output, which is f(x)
+     */
+    public double f(double x) {
         for (int i = 0; i < xValues.length - 1; i++) {
             if (x >= xValues[i] && x <= xValues[i + 1]) {
                 double x1 = xValues[i], x2 = xValues[i + 1];
