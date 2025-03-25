@@ -1,17 +1,29 @@
 package Ex0;
 
 public class Moon {
-    // from: https://he.wikipedia.org/wiki/%D7%94%D7%99%D7%A8%D7%97
-    public static final double RADIUS = 3475 * 1000; // meters
-    /**
-     * asd
-     */
-    public static final double ACCELERATION = 1.622;// m/s^2
+    public static final double RADIUS = 1737400; // meters
+    public static final double MASS = 7.34767309 * Math.pow(10, 22); // kg
+    public static final double GRAVITY_CONST = 1.622;// m/s^2
     public static final double EQ_SPEED = 1700;// m/s
 
-    public static double getAcc(double speed) {
+    /**
+     * Returns the vertical acceleration (downwards) the moon has on an
+     * object at a give speed and altitude.
+     *
+     * @param speed    Object's speed
+     * @param altitude Object's altitude from the surface of the moon
+     * @return How much downward-acceleration the objects gets from the moon's gravity.
+     */
+    public static double getVerticalAccelerationOnObject(double speed, double altitude) {
+        double totalRadius = RADIUS + altitude;
+        double speedForNoEffect = Math.sqrt((GRAVITY_CONST * MASS) / totalRadius); // v = sqrt(GM/R)
+//        double n = Math.abs(speed) / speedForNoEffect;
         double n = Math.abs(speed) / EQ_SPEED;
-        double ans = (1 - n) * ACCELERATION;
-        return ans;
+        return (1 - n) * GRAVITY_CONST;
+    }
+
+    public static double getForceOnObject(double totalMass) {
+        // f = ma
+        return totalMass * GRAVITY_CONST;
     }
 }
