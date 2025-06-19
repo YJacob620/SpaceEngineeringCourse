@@ -249,7 +249,7 @@ def match_stars_in_images_in(input_dir: str, output_subdir_name: str = "Images_M
 
 
 def match_stars_between_images(image_path1: str, image_path2: str,
-                               create_composite: bool = True, show_comparison: bool = True) -> Dict:
+                               create_composite: bool = True, show_comparison: bool = True):
     """Complete pipeline to match stars between two images."""
 
     def find_common_stars(solution1: Dict, solution2: Dict) -> Tuple[List, List, List]:
@@ -320,164 +320,233 @@ def match_stars_between_images(image_path1: str, image_path2: str,
 
         return matrix
 
-    def create_composite_image(image1: Image.Image, image2: Image.Image,
-                               transformation_matrix: np.ndarray,
-                               blend_alpha: float = 0.5) -> Image.Image:
+    # noinspection PyTypeChecker
+    def create_composite_figure(image1: Image.Image, image2: Image.Image,
+                                transformation_matrix: np.ndarray,
+                                solution1: dict,
+                                common_stars_tuple,
+                                blend_alpha: float = 0.5):
         """
-        Create composite image by overlaying transformed image2 onto image1.
+        Transform image2 and put it on top of image1 using the common stars found in them,
+        but expand the canvas so that neither image is cropped, filling new regions with white.
+        Also labels the common stars (from image1) on the composite.
 
         Args:
-            image1: PIL Image, base image.
+            image1: PIL Image for the base.
             image2: PIL Image to be transformed and overlaid.
-            transformation_matrix:
-                - If shape == (3, 3): treated as perspective transform from image2 → image1 coords.
-                - Else (e.g. shape (2, 3)): treated as affine transform from image2 → image1 coords.
-            blend_alpha: float in [0, 1], blending weight for image2 on top of image1.
-
+            transformation_matrix: 2x3 affine or 3x3 affine/perspective matrix mapping image2 → image1 coordinates.
+            solution1: dict containing at least:
+                - 'matched_centroids': list of (y, x) tuples in image1
+                - 'matched_stars': list of star info, e.g., (..., magnitude, ...)
+            common_stars_tuple: (common_ids_found, indices1, indices2)
+            blend_alpha: blending weight for image2 where it overlaps image1.
         Returns:
-            A new PIL Image showing the blended result on a canvas containing both.
+            Matplotlib Figure containing the composite with labels.
         """
-        # Convert PIL to numpy arrays
-        arr1 = np.array(image1)
-        arr2 = np.array(image2)
+        # Convert PIL images to numpy arrays
+        img1_array = np.array(image1)
+        img2_array = np.array(image2)
 
-        # Ensure both arrays have same number of channels:
-        # If one is grayscale (2D) and the other color (3D), convert grayscale to 3-channel.
-        def ensure_3ch(arr):
-            if arr.ndim == 2:
-                return np.stack([arr] * 3, axis=-1)
-            return arr
+        # Get dimensions
+        h1, w1 = img1_array.shape[:2]
+        h2, w2 = img2_array.shape[:2]
 
-        # Check dims
-        if arr1.ndim not in (2, 3) or arr2.ndim not in (2, 3):
-            raise ValueError("Images must be 2D (grayscale) or 3D (color).")
-
-        # If dims differ, convert grayscale to RGB-like
-        if arr1.ndim != arr2.ndim:
-            arr1 = ensure_3ch(arr1)
-            arr2 = ensure_3ch(arr2)
-        # After this, either both are 2D or both are 3D.
-        if arr1.ndim == 2:
-            # grayscale mode: treat single-channel
-            h1, w1 = arr1.shape
-            h2, w2 = arr2.shape
-            num_channels = 1
+        # Determine if perspective or affine
+        is_perspective = False
+        if transformation_matrix.shape == (3, 3):
+            # If last row not [0,0,1], treat as full perspective
+            if not np.allclose(transformation_matrix[2, :], [0, 0, 1]):
+                is_perspective = True
+            else:
+                # pure affine in 3x3 form
+                is_perspective = False
         else:
-            h1, w1, c1 = arr1.shape
-            h2, w2, c2 = arr2.shape
-            if c1 != c2:
-                # Should not happen after ensure_3ch, but just in case:
-                raise ValueError(f"Channel mismatch after conversion: {c1} vs {c2}")
-            num_channels = c1
+            # 2x3 affine
+            is_perspective = False
 
-        # === Compute corners of image1 and transformed corners of image2 ===
-        # Corners of image1 in its coordinate frame:
-        corners1 = np.array([
-            [0, 0],
-            [w1, 0],
-            [w1, h1],
-            [0, h1]
-        ], dtype=np.float32)  # shape (4,2)
-
-        # Corners of image2 before transform:
+        # Compute the transformed corners of image2 in image1 coordinate space
+        # Corners of image2 in homogeneous coords:
         corners2 = np.array([
-            [0, 0],
-            [w2, 0],
-            [w2, h2],
-            [0, h2]
-        ], dtype=np.float32)  # shape (4,2)
+            [0, 0, 1],
+            [w2, 0, 1],
+            [w2, h2, 1],
+            [0, h2, 1],
+        ]).T  # shape (3, 4)
 
-        # Compute transformed corners2 → image1 coordinate space
-        if transformation_matrix.shape == (3, 3):
-            # Perspective: use homogeneous multiplication manually
-            # Append ones:
-            corners2_h = np.concatenate([corners2, np.ones((4, 1), dtype=np.float32)], axis=1)  # (4,3)
-            # Transform:
-            trans = (transformation_matrix @ corners2_h.T).T  # (4,3)
-            # Normalize:
-            transformed_corners2 = trans[:, :2] / trans[:, 2:3]  # (4,2)
+        if is_perspective:
+            # 3x3 perspective
+            pts2_trans = transformation_matrix @ corners2  # shape (3,4)
+            pts2_trans = pts2_trans / pts2_trans[2:3, :]  # normalize by w
+            xs2 = pts2_trans[0, :]
+            ys2 = pts2_trans[1, :]
         else:
-            # Affine: shape (2,3). Apply M @ [x, y, 1]
-            M_aff = transformation_matrix  # shape (2,3)
-            corners2_h = np.concatenate([corners2, np.ones((4, 1), dtype=np.float32)], axis=1)  # (4,3)
-            transformed_corners2 = (M_aff @ corners2_h.T).T  # (4,2)
+            # Affine: ensure we have 2x3 matrix
+            if transformation_matrix.shape == (3, 3):
+                M_affine = transformation_matrix[:2, :]
+            else:
+                M_affine = transformation_matrix  # assumed shape (2,3)
+            # For each corner: [x,y] → M_affine[:, :2] @ [x,y] + M_affine[:,2]
+            pts2 = corners2[:2, :]  # shape (2,4)
+            xs2 = M_affine[0, 0] * pts2[0, :] + M_affine[0, 1] * pts2[1, :] + M_affine[0, 2]
+            ys2 = M_affine[1, 0] * pts2[0, :] + M_affine[1, 1] * pts2[1, :] + M_affine[1, 2]
 
-        # Combine all corners to get overall bounding box
-        all_corners = np.vstack([corners1, transformed_corners2])  # (8,2)
-        min_x, min_y = np.min(all_corners, axis=0)
-        max_x, max_y = np.max(all_corners, axis=0)
+        # Corners of image1 in image1 coords:
+        corners1_x = np.array([0, w1, w1, 0])
+        corners1_y = np.array([0, 0, h1, h1])
 
-        # Compute translation needed so that min_x, min_y map to >= 0
-        # If min_x or min_y are negative, we shift both images by (-min_x, -min_y).
-        # If they are already >=0, no negative shift is needed (we can still keep tx=0, ty=0).
-        tx = -min_x if min_x < 0 else 0.0
-        ty = -min_y if min_y < 0 else 0.0
+        # Combined extents
+        all_x = np.concatenate([corners1_x, xs2])
+        all_y = np.concatenate([corners1_y, ys2])
 
-        # Compute new canvas size (width, height). Use ceil and convert to int.
-        canvas_width = int(np.ceil(max_x + tx))
-        canvas_height = int(np.ceil(max_y + ty))
+        min_x = np.min(all_x)
+        min_y = np.min(all_y)
+        max_x = np.max(all_x)
+        max_y = np.max(all_y)
 
-        # === Build canvas for image1 ===
-        # Create blank canvas of correct shape & dtype. We'll paste arr1 at (tx, ty).
-        ix = int(np.round(tx))
-        iy = int(np.round(ty))
-        if num_channels == 1:  # grayscale:
-            canvas1 = np.full((canvas_height, canvas_width), dtype=arr1.dtype, fill_value=255)
-            # Paste arr1: note arr1 shape is (h1, w1)
-            canvas1[iy:iy + h1, ix:ix + w1] = arr1
-        else:  # color:
-            canvas1 = np.full((canvas_height, canvas_width, num_channels), dtype=arr1.dtype, fill_value=255)
-            canvas1[iy:iy + h1, ix:ix + w1, :] = arr1
+        # Compute integer canvas size and offsets
+        # We want integer pixel indices.
+        # If min_x < 0, offset_x = -min_x; else offset_x = 0.
+        offset_x = int(np.ceil(-min_x)) if min_x < 0 else 0
+        offset_y = int(np.ceil(-min_y)) if min_y < 0 else 0
 
-        # === Adjust transformation for image2 so that warping lands on the canvas ===
-        # We need a translation matrix T that shifts by (tx, ty).
-        # Then new_transform = T @ original_transform.
-        if transformation_matrix.shape == (3, 3):
-            # Build translation 3x3:
-            T = np.eye(3, dtype=np.float32)
-            T[0, 2] = tx
-            T[1, 2] = ty
-            new_transform = T @ transformation_matrix  # first apply original, then shift
-            # Warp image2 onto the canvas size
-            # cv2.warpPerspective(src, M, dsize=(width, height))
-            warped2 = cv2.warpPerspective(arr2, new_transform, (canvas_width, canvas_height))
+        canvas_w = int(np.ceil(max_x - min_x))
+        canvas_h = int(np.ceil(max_y - min_y))
+
+        # Determine if color or grayscale
+        is_color = (img1_array.ndim == 3 and img1_array.shape[2] == 3) or (img2_array.ndim == 3 and img2_array.shape[2] == 3)
+        # Create white canvas
+        if is_color:
+            canvas = np.full((canvas_h, canvas_w, 3), 255, dtype=np.uint8)
         else:
-            # Affine: original M_aff is 2x3. Convert to 3x3 to apply translation, then back to 2x3.
-            M_aff = transformation_matrix.astype(np.float32)
-            M3 = np.vstack([M_aff, [0, 0, 1]]).astype(np.float32)  # shape (3,3)
-            T = np.eye(3, dtype=np.float32)
-            T[0, 2] = tx
-            T[1, 2] = ty
-            newM3 = T @ M3  # shape (3,3)
-            new_affine = newM3[:2, :]  # shape (2,3)
-            # Warp:
-            warped2 = cv2.warpAffine(arr2, new_affine, (canvas_width, canvas_height))
+            canvas = np.full((canvas_h, canvas_w), 255, dtype=np.uint8)
 
-        # === Blend canvas1 and warped2 ===
-        # Convert to float32 for blending:
-        # If grayscale, expand dims so blending is straightforward, then squeeze back.
-        if num_channels == 1:
-            # canvas1, warped2 are (H, W); convert to float32
-            f1 = canvas1.astype(np.float32)
-            f2 = warped2.astype(np.float32)
-            blended = (1 - blend_alpha) * f1 + blend_alpha * f2
-            blended = np.clip(blended, 0, 255).astype(np.uint8)  # back to uint8
-            final_arr = blended  # shape (H, W)
-        else:
-            # color
-            f1 = canvas1.astype(np.float32)
-            f2 = warped2.astype(np.float32)
-            blended = (1 - blend_alpha) * f1 + blend_alpha * f2
-            blended = np.clip(blended, 0, 255).astype(np.uint8)
-            final_arr = blended  # shape (H, W, C)
+        # Place image1 onto canvas at (offset_x, offset_y)
+        # Note: ensure slicing indices are int
+        y1_start = offset_y
+        x1_start = offset_x
+        y1_end = y1_start + h1
+        x1_end = x1_start + w1
+        canvas[y1_start:y1_end, x1_start:x1_end] = img1_array
 
-        # Convert back to PIL Image. Preserve mode?
-        if num_channels == 1:
-            # grayscale: create 'L' image
-            return Image.fromarray(final_arr, mode='L')
+        # Prepare mask for image1 presence:  where image1 is placed, mask1 = True
+        mask1 = np.zeros((canvas_h, canvas_w), dtype=bool)
+        mask1[y1_start:y1_end, x1_start:x1_end] = True
+
+        # Prepare adjusted transformation for image2: add offset
+        if is_perspective:
+            M_new = transformation_matrix.copy().astype(np.float64)
+            # Add translation: x' = M * [x,y,1] + [offset_x, offset_y] in homogeneous: we adjust the [0,2] and [1,2] entries
+            M_new[0, 2] += offset_x
+            M_new[1, 2] += offset_y
+            # M_new[2,2] remains 1
+            # Warp onto full canvas
+            warped2 = cv2.warpPerspective(
+                img2_array,
+                M_new,
+                (canvas_w, canvas_h),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=255  # white background
+            )
+            # Create mask by warping a mask image
+            mask_src = np.ones((h2, w2), dtype=np.uint8) * 255
+            warped_mask2 = cv2.warpPerspective(
+                mask_src,
+                M_new,
+                (canvas_w, canvas_h),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+            mask2 = warped_mask2 > 0
         else:
-            # assume RGB or similar
-            return Image.fromarray(final_arr)
+            # Affine: get 2x3
+            if transformation_matrix.shape == (3, 3):
+                M_affine = transformation_matrix[:2, :].copy().astype(np.float64)
+            else:
+                M_affine = transformation_matrix.copy().astype(np.float64)
+            # adjust translation terms
+            M_affine[0, 2] += offset_x
+            M_affine[1, 2] += offset_y
+            # Warp onto full canvas
+            warped2 = cv2.warpAffine(
+                img2_array,
+                M_affine,
+                (canvas_w, canvas_h),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=255  # white
+            )
+            mask_src = np.ones((h2, w2), dtype=np.uint8) * 255
+            warped_mask2 = cv2.warpAffine(
+                mask_src,
+                M_affine,
+                (canvas_w, canvas_h),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+            mask2 = warped_mask2 > 0
+
+        # Now blend: canvas currently has image1 (or white) in canvas.
+        # For pixels where mask2 is True:
+        #   if mask1 is True (overlap): blend image1 and warped2
+        #   else: take warped2 directly
+        canvas_float = canvas.astype(np.float32)
+        warped2_float = warped2.astype(np.float32)
+
+        # For color, we assume shape (...,3); for grayscale, shape (...)
+        if is_color:
+            H, W, _ = canvas.shape
+            for c in range(3):
+                # Overlap region
+                overlap = mask2 & mask1
+                canvas_float[overlap, c] = (
+                        (1 - blend_alpha) * canvas_float[overlap, c] +
+                        blend_alpha * warped2_float[overlap, c]
+                )
+                # Non-overlap but where image2 exists
+                only2 = mask2 & (~mask1)
+                canvas_float[only2, c] = warped2_float[only2, c]
+        else:
+            # grayscale
+            overlap = mask2 & mask1
+            canvas_float[overlap] = (
+                    (1 - blend_alpha) * canvas_float[overlap] +
+                    blend_alpha * warped2_float[overlap]
+            )
+            only2 = mask2 & (~mask1)
+            canvas_float[only2] = warped2_float[only2]
+
+        composite_uint8 = np.clip(canvas_float, 0, 255).astype(np.uint8)
+
+        # Prepare figure for visualization
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.imshow(composite_uint8, cmap=None if is_color else 'gray')
+        ax.set_title(f'Composite Image - {len(common_stars_tuple[0])} Common Stars Labeled',
+                     fontsize=14, fontweight='bold')
+        ax.axis('off')
+
+        # Label common stars: shift their coordinates by the offset
+        common_ids_found, indices1, indices2 = common_stars_tuple
+        centroids1 = solution1['matched_centroids']  # list of (y, x)
+        stars1 = solution1['matched_stars']  # e.g., list where [2] is magnitude
+
+        # noinspection PyUnresolvedReferences
+        colors = plt.cm.Set3(np.linspace(0, 1, len(common_ids_found)))
+
+        for i, (cat_id, idx1, idx2) in enumerate(zip(common_ids_found, indices1, indices2)):
+            color = colors[i]
+            y1, x1 = centroids1[idx1]
+            # Shift by offsets to composite coords
+            x_plot = x1 + offset_x
+            y_plot = y1 + offset_y
+            magnitude = stars1[idx1][2]
+            # Use your existing labeling function; signature: label_star_on_plot(ax, x, y, color, cat_id, magnitude)
+            label_star_on_plot(ax, x_plot, y_plot, color, cat_id, magnitude)
+
+        plt.tight_layout(pad=0)
+        return fig
 
     def visualize_cross_image_matches(
             image1: Image.Image,
@@ -580,39 +649,28 @@ def match_stars_between_images(image_path1: str, image_path2: str,
 
             # Image1 star
             y1, x1 = centroids1[idx1]
-            y1_plot = y1 + y_offset1
-            x1_plot = x1
+            y1 = y1 + y_offset1
             star1 = stars1[idx1]
-            label_star_on_plot(ax, x1_plot, y1_plot, color, cat_id, star1[2])
+            label_star_on_plot(ax, x1, y1, color, cat_id, star1[2])
 
             # Image2 star
             y2, x2 = centroids2[idx2]
-            y2_plot = y2 + y_offset2
-            x2_plot = x2 + offset_x
+            y2 = y2 + y_offset2
+            x2 = x2 + offset_x
             star2 = stars2[idx2]
-            label_star_on_plot(ax, x2_plot, y2_plot, color, cat_id, star2[2])
+            label_star_on_plot(ax, x2, y2, color, cat_id, star2[2])
 
             # Line connecting
-            ax.plot([x1_plot, x2_plot], [y1_plot, y2_plot],
+            ax.plot([x1, x2], [y1, y2],
                     linestyle='--', linewidth=1, color=color, alpha=0.7)
 
         plt.tight_layout(pad=0)
         return fig
 
-    print(f"Processing images:")
-    print(f"  Image 1: {image_path1}")
-    print(f"  Image 2: {image_path2}")
-
-    # Load images
-    try:
-        image1 = Image.open(image_path1).convert("RGB")
-        image2 = Image.open(image_path2).convert("RGB")
-    except Exception as e:
-        print(f"Error loading images: {e}")
-        return {"error": str(e)}
-
-    # Get solutions for both images
-    print("\nSolving Image 1...")
+    print(f"Loading images...")
+    image1 = Image.open(image_path1).convert("RGB")
+    image2 = Image.open(image_path2).convert("RGB")
+    print("Solving Image 1...")
     start_time = time.time()
     solution1 = get_solution_for_image(image1, return_visual=create_composite or show_comparison)
     time1 = time.time() - start_time
@@ -626,30 +684,34 @@ def match_stars_between_images(image_path1: str, image_path2: str,
     sol2 = solution2[0] if isinstance(solution2, tuple) else solution2
     solved1 = sol1['RA'] is not None
     solved2 = sol2['RA'] is not None
-    print(f"\nResults:")
-    print(f"  Image 1: {'✓ Solved' if solved1 else '✗ No solution'} ({time1:.2f}s)")
-    print(f"  Image 2: {'✓ Solved' if solved2 else '✗ No solution'} ({time2:.2f}s)")
+
+    def print_solved(img_name: str, is_solved: bool, time: float, num_recognized_stars: int):
+        if is_solved:
+            print(f'✓ {img_name} solved ({time:.2f}: {num_recognized_stars} recognized stars')
+            return
+        print(f"✗ {img_name} could not be solved")
+
+    print_solved('Image 1', solved1, time1, len(sol1['matched_stars']))
+    print_solved('Image 2', solved2, time2, len(sol2['matched_stars']))
+    if not (solved1 and solved2):
+        print("At least one of the images could not be solved")
+        return
+
     results = {
         "solved1": solved1,
         "solved2": solved2,
         "solution1": sol1,
         "solution2": sol2,
     }
-    if not (solved1 and solved2):
-        results["error"] = "One or both images could not be solved"
-        return results
-    print(f"  Image 1: {len(sol1['matched_stars'])} stars matched")
-    print(f"  Image 2: {len(sol2['matched_stars'])} stars matched")
 
     # Find common stars
     common_ids, indices1, indices2 = find_common_stars(sol1, sol2)
     if len(common_ids) == 0:
-        results["error"] = "No common stars found between the pictures"
+        print("✗ No common stars were found between the images")
         return results
 
     # Print common stars info
-    print(f"  Common stars found: {len(common_ids)}")
-    print(f"\nCommon Stars:")
+    print(f"✓ {len(common_ids)} common stars found:")
     for i, (cat_id, idx1, idx2) in enumerate(zip(common_ids, indices1, indices2)):
         star1 = sol1['matched_stars'][idx1]
         cent1 = sol1['matched_centroids'][idx1]
@@ -680,44 +742,24 @@ def match_stars_between_images(image_path1: str, image_path2: str,
         points2 = np.array([[sol2['matched_centroids'][i][1],
                              sol2['matched_centroids'][i][0]] for i in indices2])
 
-        # Compute transformation matrix
+        # Create composite visualization
         transform_matrix = compute_transformation_matrix(points2, points1)
-
         if transform_matrix is not None:
-            # Create composite
-            composite_image = create_composite_image(
-                image1, image2, transform_matrix, blend_alpha=0.5
+            results["composite_figure"] = create_composite_figure(
+                image1,
+                image2,
+                transform_matrix,
+                solution1=sol1,
+                common_stars_tuple=(common_ids, indices1, indices2),
+                blend_alpha=.5,
             )
-
-            # Create composite visualization
-            fig_composite, ax = plt.subplots(figsize=(12, 8))
-            ax.imshow(np.array(composite_image))
-            ax.set_title(f'Composite Image - {len(common_ids)} Common Stars Used for Alignment',
-                         fontsize=14, fontweight='bold')
-            ax.set_xlabel('X Pixel')
-            ax.set_ylabel('Y Pixel')
-            ax.axis('off')
-
-            results["composite_image"] = composite_image
-            results["composite_figure"] = fig_composite
             results["transformation_matrix"] = transform_matrix
 
             print(f"✓ Composite image created using {len(common_ids)} common stars")
         else:
             print("✗ Could not compute transformation matrix")
     elif len(common_ids) < 3:
-        print(f"✗ Cannot create composite: need ≥3 common stars, found {len(common_ids)}")
-
-    if "error" not in results:
-        print(f"\n✓ Cross-image matching completed successfully!")
-        print(f"Common stars found: {results['common_stars']}")
-        if "composite_image" in results:
-            print(f"Composite image created: ✓")
-            print(f"Composite size: {results['composite_image'].size}")
-        else:
-            print(f"Composite image: ✗ (need ≥3 common stars)")
-    else:
-        print(f"\n✗ Cross-image matching failed: {results['error']}")
+        print(f"✗ Cannot create composite image: need ≥3 common stars, found {len(common_ids)}")
 
     plt.show()
     return results
@@ -757,19 +799,19 @@ if __name__ == '__main__':
     print("Loading bright star database...")
     T3.load_database(CUSTOM_DB_PATH)
 
-    print("Performing operation", end=': ')
+    print("Performing", end=' ')
     USAGE = 3
     if USAGE == 1:
-        # Usage 1: Single image matching (original functionality)
-        print("Single Image Matching")
+        # Usage 1: Single image matching
+        print("single image matching:")
         match_stars_in_image("./Images/19.jfif", False)
     elif USAGE == 2:
-        # Usage 2: Batch processing (original functionality)
-        print("Batch Image Matching")
+        # Usage 2: Batch processing
+        print("batch image matching:")
         match_stars_in_images_in('./Images')
     elif USAGE == 3:
-        # Usage 3: Cross-image matching (new functionality)
-        print("Cross Image Matching")
-        image1_path = "./Images/IMG_3054.jpg"
+        # Usage 3: Cross-image matching
+        print("cross-image matching:")
+        image1_path = "./Images/ST_db1.png"
         image2_path = "./Images/ST_db2.png"
-        match_stars_between_images(image1_path, image2_path, show_comparison=False)
+        match_stars_between_images(image1_path, image2_path, show_comparison=True)
