@@ -1,15 +1,55 @@
-import matplotlib.axes
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from PIL import Image
-from pathlib import Path
-import numpy as np
 import os
 import time
 import logging
-import tetra3
+import argparse
+import tkinter as tk
+from tkinter import filedialog
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-import cv2
+
+try:
+    import matplotlib.axes
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from PIL import Image
+    import numpy as np
+    import cv2
+except ImportError:
+    print("Missing required modules. Run the following command to install them:\npip install -r requirements.txt")
+    exit(1)
+try:
+    import tetra3
+except ImportError:
+    print("Missing the file tetra3.py. It must exist in the current directory.")
+    exit(1)
+
+T3 = tetra3.Tetra3(load_database=None)
+SOLUTION_KEY_DESCRIPTIONS = {
+    'RA': "Right ascension of center of image in degrees",
+    'Dec': "Declination of center of image in degrees",
+    'Roll': "Rotation of image relative to north celestial pole",
+    'FOV': "Calculated horizontal field of view of the provided image",
+    'distortion': "Calculated distortion of the provided image",
+    'RMSE': "RMS residual of matched stars in arcseconds",
+    'Matches': "Number of stars in the image matched to the database",
+    'Prob': "Probability that the solution is a false-positive",
+    'epoch_equinox': "The celestial RA/Dec equinox reference epoch",
+    'epoch_proper_motion': "The epoch the database proper motions were propagated to",
+    'T_solve': "Time spent searching for a match in milliseconds",
+    'T_extract': "Time spent extracting star centroids in milliseconds",
+    'RA_target': "Right ascension in degrees of the target pixel positions",
+    'Dec_target': "Declination in degrees of the target pixel positions",
+}
+GEN_DB_HELP = (f"Note that the 285kb Yale Bright Star binary file must exist in the current directory "
+               f"and be named 'bsc5' (lowercase) for successful generation.\n"
+               f"You can download the file from here:\n"
+               f"http://tdc-www.harvard.edu/catalogs/BSC5")
+IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.fits', 'jfif')
+"""File extensions to consider as images"""
+FILETYPES = [
+    ("Image files", " ".join([f"*{ext}" if ext.startswith('.') else f"*.{ext}" for ext in IMAGE_EXTENSIONS])),
+    ("All files", "*.*"),
+]
 
 
 def get_solution_for_image(image, return_visual: bool):
@@ -114,7 +154,7 @@ def print_matched_stars_info(solution):
         print(f"[Magnitude: {mag:.2f}]")
 
 
-def match_stars_in_image(image_path: str, show_star_detection: bool = False) -> None:
+def match_stars_in_image(image_path: str, show_star_detection: bool = False) -> bool:
     """
     Given an image of the night sky, try to match stars in it to those that are in
     a Tetra3 database.
@@ -134,9 +174,11 @@ def match_stars_in_image(image_path: str, show_star_detection: bool = False) -> 
         plt.axis('off')
     if not matched:
         if not detected_stars:
-            print('NO STARS WERE DETECTED')
+            print('No stars were detected in the image')
+            return False
         else:
-            print('NO MATCHING WAS FOUND')
+            print('No matching was found for the image')
+            return False
     else:
         print('\nSolution found:')
         for key, value in solution[0].items():
@@ -145,6 +187,7 @@ def match_stars_in_image(image_path: str, show_star_detection: bool = False) -> 
         print_matched_stars_info(solution[0])
         visualize_solution(rgb_image, solution[0])
     plt.show()
+    return True
 
 
 def match_stars_in_images_in(input_dir: str, output_subdir_name: str = "Images_Matched", ):
@@ -161,9 +204,7 @@ def match_stars_in_images_in(input_dir: str, output_subdir_name: str = "Images_M
     output_dir = os.path.join(input_dir, output_subdir_name)
     os.makedirs(output_dir, exist_ok=True)
     print(f"Matched images will be saved into: {input_dir}/{output_subdir_name}")
-
-    # File extensions to consider as images
-    IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.fits', 'jfif')
+    global IMAGE_EXTENSIONS
 
     # Summary counters and timer
     total_files = 0
@@ -249,7 +290,7 @@ def match_stars_in_images_in(input_dir: str, output_subdir_name: str = "Images_M
 
 
 def match_stars_between_images(image_path1: str, image_path2: str,
-                               create_composite: bool = True, show_comparison: bool = True):
+                               create_composite: bool = True, show_comparison: bool = True) -> bool:
     """Complete pipeline to match stars between two images."""
 
     def find_common_stars(solution1: Dict, solution2: Dict) -> Tuple[List, List, List]:
@@ -687,7 +728,7 @@ def match_stars_between_images(image_path1: str, image_path2: str,
 
     def print_solved(img_name: str, is_solved: bool, time: float, num_recognized_stars: int):
         if is_solved:
-            print(f'✓ {img_name} solved ({time:.2f}: {num_recognized_stars} recognized stars')
+            print(f'✓ {img_name} solved ({time:.2f}s): {num_recognized_stars} recognized stars')
             return
         print(f"✗ {img_name} could not be solved")
 
@@ -695,7 +736,7 @@ def match_stars_between_images(image_path1: str, image_path2: str,
     print_solved('Image 2', solved2, time2, len(sol2['matched_stars']))
     if not (solved1 and solved2):
         print("At least one of the images could not be solved")
-        return
+        return False
 
     results = {
         "solved1": solved1,
@@ -708,7 +749,7 @@ def match_stars_between_images(image_path1: str, image_path2: str,
     common_ids, indices1, indices2 = find_common_stars(sol1, sol2)
     if len(common_ids) == 0:
         print("✗ No common stars were found between the images")
-        return results
+        return False
 
     # Print common stars info
     print(f"✓ {len(common_ids)} common stars found:")
@@ -722,6 +763,7 @@ def match_stars_between_images(image_path1: str, image_path2: str,
 
     # Create cross-image visualization
     if show_comparison:
+        print(f"\nCreating comparison plot...")
         cross_match_fig = visualize_cross_image_matches(
             image1, image2, sol1, sol2, common_ids, indices1, indices2
         )
@@ -762,31 +804,36 @@ def match_stars_between_images(image_path1: str, image_path2: str,
         print(f"✗ Cannot create composite image: need ≥3 common stars, found {len(common_ids)}")
 
     plt.show()
-    return results
+    return True
 
 
-if __name__ == '__main__':
-    GENERATE_DB = False
-    CUSTOM_DB_PATH = Path('./Generated_DB/yale_database')
-    SOLUTION_KEY_DESCRIPTIONS = {
-        'RA': "Right ascension of center of image in degrees",
-        'Dec': "Declination of center of image in degrees",
-        'Roll': "Rotation of image relative to north celestial pole",
-        'FOV': "Calculated horizontal field of view of the provided image",
-        'distortion': "Calculated distortion of the provided image",
-        'RMSE': "RMS residual of matched stars in arcseconds",
-        'Matches': "Number of stars in the image matched to the database",
-        'Prob': "Probability that the solution is a false-positive",
-        'epoch_equinox': "The celestial RA/Dec equinox reference epoch",
-        'epoch_proper_motion': "The epoch the database proper motions were propagated to",
-        'T_solve': "Time spent searching for a match in milliseconds",
-        'T_extract': "Time spent extracting star centroids in milliseconds",
-        'RA_target': "Right ascension in degrees of the target pixel positions",
-        'Dec_target': "Declination in degrees of the target pixel positions",
-    }
-    T3 = tetra3.Tetra3(load_database=None)
+def main():
+    def create_tk():
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        return root
 
-    if GENERATE_DB:
+    global T3
+    global SOLUTION_KEY_DESCRIPTIONS
+    CUSTOM_DB_PATH = Path('./yale_database')
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--visual-rich',
+        '-v',
+        action="store_true",
+        help="Whether to show star detection (for mode 1) or side-by-side figures (for mode 3)")
+    parser.add_argument(
+        '--generate-db',
+        '-g',
+        action="store_true",
+        help=f"Whether to generate the database for star matching before proceeding.\n{GEN_DB_HELP}"
+    )
+    args = parser.parse_args()
+
+    # Database handling
+    generate_db = args.generate_db
+    if generate_db:
         print("Generating bright star database...")
         T3.generate_database(
             min_fov=1,
@@ -796,22 +843,75 @@ if __name__ == '__main__':
             save_as=CUSTOM_DB_PATH
         )
     logging.getLogger('tetra3.Tetra3').setLevel(logging.WARNING)
-    print("Loading bright star database...")
-    T3.load_database(CUSTOM_DB_PATH)
+    print("\nLoading bright star database...")
+    try:
+        T3.load_database(CUSTOM_DB_PATH)
+    except RuntimeError:
+        print(f'Failed to load database. Rerun with -g to generate a new database.\n{GEN_DB_HELP}')
 
-    print("Performing", end=' ')
-    USAGE = 3
-    if USAGE == 1:
-        # Usage 1: Single image matching
-        print("single image matching:")
-        match_stars_in_image("./Images/19.jfif", False)
-    elif USAGE == 2:
-        # Usage 2: Batch processing
-        print("batch image matching:")
-        match_stars_in_images_in('./Images')
-    elif USAGE == 3:
-        # Usage 3: Cross-image matching
-        print("cross-image matching:")
-        image1_path = "./Images/ST_db1.png"
-        image2_path = "./Images/ST_db2.png"
-        match_stars_between_images(image1_path, image2_path, show_comparison=True)
+    print("\nAvailable modes:")
+    print("1. Single image matching")
+    print("2. Batch image matching")
+    print("3. Cross-image matching")
+    while True:
+        try:
+            mode = int(input("Select mode (1-3): "))
+            if mode in [1, 2, 3]:
+                break
+            else:
+                print("Please enter 1, 2, or 3")
+        except ValueError:
+            print("Please enter a valid number")
+
+    print()
+    root = create_tk()
+    if mode == 1:
+        print("Please select an image file...")
+        image_path = filedialog.askopenfilename(title="Select Image File", filetypes=FILETYPES)
+        if not image_path:
+            print("Error: No image file selected")
+            return
+        print(f"Selected: {image_path}")
+        visual_rich = args.visual_rich
+        print("Performing single image matching:")
+        success = match_stars_in_image(image_path, show_star_detection=visual_rich)
+        if not visual_rich and success:
+            print('\nRerun with argument -v to show a visualization of star detection')
+
+    elif mode == 2:
+        print("Please select a directory containing images...")
+        dir_path = filedialog.askdirectory(title="Select Image Directory", mustexist=True)
+        if not dir_path:
+            print("Error: No directory selected")
+            return
+        print(f"Selected: {dir_path}")
+        print("Performing batch image matching:")
+        match_stars_in_images_in(dir_path)
+
+    elif mode == 3:
+        print("Please select the first image...")
+        image1_path = filedialog.askopenfilename(title="Select First Image", filetypes=FILETYPES)
+        if not image1_path:
+            print("Error: No first image selected")
+            return
+        print(f"First image: {image1_path}")
+
+        print("Please select the second image...")
+        image2_path = filedialog.askopenfilename(title="Select Second Image", filetypes=FILETYPES)
+        if not image2_path:
+            print("Error: No second image selected")
+            return
+        print(f"Second image: {image2_path}")
+
+        print("Performing cross-image matching:")
+        visual_rich = args.visual_rich
+        success = match_stars_between_images(image1_path, image2_path, show_comparison=visual_rich)
+        if not visual_rich and success:
+            print('\nRerun with argument -v to show a side-by-side matching')
+
+    # Clean up tkinter
+    root.destroy()
+
+
+if __name__ == '__main__':
+    main()
