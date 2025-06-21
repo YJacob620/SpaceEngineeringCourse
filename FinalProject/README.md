@@ -21,27 +21,19 @@ A Python application that detects and identifies stars in night sky images by ma
 ## Installation
 
 1. Clone or download this repository
-2. Install dependencies with:
-
-_pip install -r requirements.txt_
+2. Open in terminal/CMD and install dependencies with: <br/>&nbsp;&nbsp; _pip install -r requirements.txt_
 
 ## Usage
 
-Open terminal/CMD in the program folder and run:
-
-_python BrightStarIdentifier.py_
+Open terminal/CMD in the program folder and run: <br/>&nbsp;&nbsp; _python BrightStarIdentifier.py_
 
 The program will prompt you to select a mode and guide you through file selection.
 
 #### Command Line Options
 
-(Re)Generate the star database:
+(Re)Generate the star database (yale_database.npz): <br/>&nbsp;&nbsp; _python BrightStarIdentifier.py -g_
 
-_python BrightStarIdentifier.py -g_
-
-Enable additional visualizations:
-
-_python BrightStarIdentifier.py -v_
+Enable additional visualizations: <br/>&nbsp;&nbsp; _python BrightStarIdentifier.py -v_
 
 ## Operating Modes
 
