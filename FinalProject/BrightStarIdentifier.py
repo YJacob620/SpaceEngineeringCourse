@@ -58,10 +58,10 @@ def get_solution_for_image(image, return_visual: bool):
         return_matches=True,
         return_visual=return_visual,
         return_images=return_visual,
+        solve_timeout=3000,  # Maximum solving time (miliseconds)
         # fov_max_error=0.2,  # ±20% FOV tolerance
         # match_radius=0.01,  # Star matching tolerance (degrees)
         # match_threshold=0.001,  # Statistical confidence threshold
-        # solve_timeout=7000,  # Maximum solving time (miliseconds)
         # fov_estimate=70,
     )
     return solution
@@ -726,14 +726,14 @@ def match_stars_between_images(image_path1: str, image_path2: str,
     solved1 = sol1['RA'] is not None
     solved2 = sol2['RA'] is not None
 
-    def print_solved(img_name: str, is_solved: bool, time: float, num_recognized_stars: int):
+    def print_solved(img_name: str, is_solved: bool, time: float, sol):
         if is_solved:
-            print(f'✓ {img_name} solved ({time:.2f}s): {num_recognized_stars} recognized stars')
+            print(f'✓ {img_name} solved ({time:.2f}s): {len(sol['matched_stars'])} recognized stars')
             return
         print(f"✗ {img_name} could not be solved")
 
-    print_solved('Image 1', solved1, time1, len(sol1['matched_stars']))
-    print_solved('Image 2', solved2, time2, len(sol2['matched_stars']))
+    print_solved('Image 1', solved1, time1, sol1)
+    print_solved('Image 2', solved2, time2, sol2)
     if not (solved1 and solved2):
         print("At least one of the images could not be solved")
         return False
@@ -866,44 +866,44 @@ def main():
     print()
     root = create_tk()
     if mode == 1:
-        print("Please select an image file...")
+        print("Please select an image file")
         image_path = filedialog.askopenfilename(title="Select Image File", filetypes=FILETYPES)
         if not image_path:
             print("Error: No image file selected")
             return
         print(f"Selected: {image_path}")
         visual_rich = args.visual_rich
-        print("Performing single image matching:")
+        print("Performing single image matching...")
         success = match_stars_in_image(image_path, show_star_detection=visual_rich)
         if not visual_rich and success:
             print('\nRerun with argument -v to show a visualization of star detection')
 
     elif mode == 2:
-        print("Please select a directory containing images...")
+        print("Please select a directory containing images")
         dir_path = filedialog.askdirectory(title="Select Image Directory", mustexist=True)
         if not dir_path:
             print("Error: No directory selected")
             return
         print(f"Selected: {dir_path}")
-        print("Performing batch image matching:")
+        print("Performing batch image matching...")
         match_stars_in_images_in(dir_path)
 
     elif mode == 3:
-        print("Please select the first image...")
+        print("Please select the first image")
         image1_path = filedialog.askopenfilename(title="Select First Image", filetypes=FILETYPES)
         if not image1_path:
             print("Error: No first image selected")
             return
         print(f"First image: {image1_path}")
 
-        print("Please select the second image...")
+        print("Please select the second image")
         image2_path = filedialog.askopenfilename(title="Select Second Image", filetypes=FILETYPES)
         if not image2_path:
             print("Error: No second image selected")
             return
         print(f"Second image: {image2_path}")
 
-        print("Performing cross-image matching:")
+        print("Performing cross-image matching...")
         visual_rich = args.visual_rich
         success = match_stars_between_images(image1_path, image2_path, show_comparison=visual_rich)
         if not visual_rich and success:
